@@ -23,6 +23,12 @@ export interface IOSCleanOptions {
   globalCache: boolean;
 }
 
+export interface GlobalCacheCleanOptions {
+  gradle: boolean;
+  cocoaPods: boolean;
+  pubCache: boolean;
+}
+
 export interface ConfigCleanOptions {
   flutter: FlutterCleanOptions;
   android: AndroidCleanOptions;
@@ -31,7 +37,9 @@ export interface ConfigCleanOptions {
 
 export interface Config {
   version: string;
+  projects: ProjectConfig[];
   cleanOptions: ConfigCleanOptions;
+  globalCache: GlobalCacheCleanOptions;
   safeMode: boolean;
   backupBeforeClean: boolean;
   showSizeBefore: boolean;
@@ -64,6 +72,7 @@ export class ConfigManager {
   getDefaultConfig(): Config {
     return {
       version: '1.0',
+      projects: [],
       cleanOptions: {
         flutter: {
           build: true,
@@ -84,11 +93,37 @@ export class ConfigManager {
           globalCache: false,
         },
       },
+      globalCache: {
+        gradle: true,
+        cocoaPods: true,
+        pubCache: true,
+      },
       safeMode: true,
       backupBeforeClean: false,
       showSizeBefore: true,
       excludePatterns: [],
     };
+  }
+
+  /**
+   * Find config file by searching current and parent directories
+   */
+  static findConfigFile(startPath: string): string | null {
+    let currentPath = path.resolve(startPath);
+    const root = path.parse(currentPath).root;
+    const configNames = ['.flutter-cleaner.json', 'flutter-cleaner.config.json'];
+
+    while (currentPath !== root) {
+      for (const configName of configNames) {
+        const configPath = path.join(currentPath, configName);
+        if (fs.existsSync(configPath)) {
+          return configPath;
+        }
+      }
+      currentPath = path.dirname(currentPath);
+    }
+
+    return null;
   }
 
   /**
@@ -134,6 +169,7 @@ export class ConfigManager {
 
     return {
       version: config.version || defaults.version,
+      projects: config.projects || defaults.projects,
       cleanOptions: {
         flutter: {
           ...defaults.cleanOptions.flutter,
@@ -148,11 +184,67 @@ export class ConfigManager {
           ...config.cleanOptions?.ios,
         },
       },
+      globalCache: {
+        ...defaults.globalCache,
+        ...config.globalCache,
+      },
       safeMode: config.safeMode ?? defaults.safeMode,
       backupBeforeClean: config.backupBeforeClean ?? defaults.backupBeforeClean,
       showSizeBefore: config.showSizeBefore ?? defaults.showSizeBefore,
       excludePatterns: config.excludePatterns || defaults.excludePatterns,
     };
+  }
+
+  /**
+   * Get enabled projects from config
+   */
+  async getEnabledProjects(): Promise<ProjectConfig[]> {
+    const config = await this.loadConfig();
+    return config.projects.filter((p) => p.enabled);
+  }
+
+  /**
+   * Add a project to config
+   */
+  async addProject(name: string, projectPath: string, enabled = true): Promise<void> {
+    const config = await this.loadConfig();
+
+    // Check if project already exists
+    const existingIndex = config.projects.findIndex(
+      (p) => p.path === projectPath
+    );
+
+    if (existingIndex >= 0) {
+      config.projects[existingIndex].name = name;
+      config.projects[existingIndex].enabled = enabled;
+    } else {
+      config.projects.push({
+        name,
+        path: path.resolve(projectPath),
+        enabled,
+      });
+    }
+
+    await this.saveConfig(config);
+  }
+
+  /**
+   * Remove a project from config
+   */
+  async removeProject(projectPath: string): Promise<void> {
+    const config = await this.loadConfig();
+    config.projects = config.projects.filter((p) => p.path !== projectPath);
+    await this.saveConfig(config);
+  }
+
+  /**
+   * Get project paths for deep clean analysis
+   */
+  async getProjectPathsForDeepClean(): Promise<string[]> {
+    const config = await this.loadConfig();
+    return config.projects
+      .filter((p) => p.enabled)
+      .map((p) => p.path);
   }
 
   /**

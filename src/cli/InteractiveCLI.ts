@@ -246,4 +246,121 @@ export class InteractiveCLI {
       );
     }
   }
+
+  /**
+   * Show deep clean warning
+   */
+  showDeepCleanWarning(): void {
+    console.log('\n');
+    console.log(chalk.red('═══════════════════════════════════════════════'));
+    console.log(chalk.red('  ⚠️  WARNING: Deep Clean Mode'));
+    console.log(chalk.red('═══════════════════════════════════════════════'));
+
+    console.log(chalk.yellow('\nThis will clean global caches that may be used by other projects:'));
+    console.log(chalk.gray('  • ~/.gradle/caches/ - Gradle dependencies'));
+    console.log(chalk.gray('  • ~/.pub-cache/ - Dart package cache'));
+    if (process.platform === 'darwin') {
+      console.log(chalk.gray('  • ~/Library/Caches/CocoaPods/ - CocoaPods cache'));
+    }
+
+    console.log(chalk.yellow('\nAfter cleaning, you will need to re-download all dependencies.'));
+    console.log(chalk.yellow('This may take significant time on the next build.'));
+    console.log('\n');
+  }
+
+  /**
+   * Confirm deep clean with project name verification
+   */
+  async confirmDeepClean(projectName: string): Promise<boolean> {
+    // Show warning first
+    this.showDeepCleanWarning();
+
+    // Ask for project name confirmation
+    const { name } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'name',
+        message: `To confirm, please enter the project name (${projectName}):`,
+        validate: (input: string) => {
+          return input === projectName || 'Project name does not match';
+        },
+      },
+    ]);
+
+    const { confirm } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'confirm',
+        message: chalk.red('Are you absolutely sure you want to perform a deep clean?'),
+        default: false,
+      },
+    ]);
+
+    return confirm;
+  }
+
+  /**
+   * Display global cache preview
+   */
+  displayGlobalCachePreview(preview: {
+    unusedGradleCount: number;
+    unusedGradleSize: number;
+    unusedPubCount: number;
+    unusedPubSize: number;
+    cocoapodsSize: number;
+  }): void {
+    console.log('\n');
+    console.log(chalk.cyan('═══════════════════════════════════════════════'));
+    console.log(chalk.cyan('  Global Cache Analysis'));
+    console.log(chalk.cyan('═══════════════════════════════════════════════'));
+
+    console.log(chalk.yellow('\nGradle Cache (unused modules):'));
+    console.log(chalk.gray(`  - ${preview.unusedGradleCount} modules (${format(preview.unusedGradleSize)})`));
+
+    console.log(chalk.yellow('\nPub Cache (unused packages):'));
+    console.log(chalk.gray(`  - ${preview.unusedPubCount} package versions (${format(preview.unusedPubSize)})`));
+
+    if (process.platform === 'darwin') {
+      console.log(chalk.yellow('\nCocoaPods Cache:'));
+      console.log(chalk.gray(`  - ${format(preview.cocoapodsSize)}`));
+    }
+
+    const total = preview.unusedGradleSize + preview.unusedPubSize + preview.cocoapodsSize;
+    console.log('\n');
+    console.log(chalk.cyan('═══════════════════════════════════════════════'));
+    console.log(chalk.cyan(`  Total can be freed: ${format(total)}`));
+    console.log(chalk.cyan('═══════════════════════════════════════════════'));
+  }
+
+  /**
+   * Display deep clean results
+   */
+  displayDeepCleanResults(results: {
+    gradle: { deletedPaths: number; freedSpace: number };
+    cocoapods: { deletedPaths: number; freedSpace: number };
+    pubCache: { deletedPaths: number; freedSpace: number };
+    totalFreedSpace: number;
+  }): void {
+    console.log('\n');
+    console.log(chalk.green('✓ Deep clean completed!'));
+    console.log(chalk.cyan('\n═══ Global Cache Summary ═══'));
+
+    console.log(chalk.yellow('\nGradle Cache:'));
+    console.log(chalk.gray(`  - ${results.gradle.deletedPaths} modules cleaned`));
+    console.log(chalk.gray(`  - ${format(results.gradle.freedSpace)} freed`));
+
+    console.log(chalk.yellow('\nPub Cache:'));
+    console.log(chalk.gray(`  - ${results.pubCache.deletedPaths} packages cleaned`));
+    console.log(chalk.gray(`  - ${format(results.pubCache.freedSpace)} freed`));
+
+    if (process.platform === 'darwin') {
+      console.log(chalk.yellow('\nCocoaPods Cache:'));
+      console.log(chalk.gray(`  - ${results.cocoapods.deletedPaths > 0 ? 'Cleaned' : 'None found'}`));
+      console.log(chalk.gray(`  - ${format(results.cocoapods.freedSpace)} freed`));
+    }
+
+    console.log(chalk.cyan('\n═══════════════════════════════════════'));
+    console.log(chalk.cyan(`  Total freed: ${format(results.totalFreedSpace)}`));
+    console.log(chalk.cyan('═══════════════════════════════════════'));
+  }
 }

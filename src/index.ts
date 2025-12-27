@@ -5,9 +5,12 @@ import chalk from 'chalk';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { ProjectDetector } from './core/ProjectDetector';
+import { ConfigManager } from './core/ConfigManager';
+import { DependencyReader } from './core/DependencyReader';
 import { FlutterCleaner } from './cleaners/FlutterCleaner';
 import { AndroidCleaner } from './cleaners/AndroidCleaner';
 import { IOSCleaner } from './cleaners/IOSCleaner';
+import { GlobalCacheCleaner } from './cleaners/GlobalCacheCleaner';
 import { InteractiveCLI, CleanLevel } from './cli/InteractiveCLI';
 import { format } from './utils/SizeUtils';
 import { getPathStats, PathStats } from './utils/FileUtils';
@@ -38,6 +41,8 @@ program
   .option('-p, --project <path>', 'Flutter project path (default: current directory)')
   .option('-f, --fast', 'Fast clean mode (build directories only)')
   .option('-s, --standard', 'Standard clean mode (includes caches)')
+  .option('-D, --deep', 'Deep clean mode (includes global caches)')
+  .option('-c, --config <path>', 'Config file path')
   .option('-d, --dry-run', 'Preview mode (show what would be cleaned without deleting)')
   .option('--no-color', 'Disable colored output')
   .action(async (options) => {
@@ -72,10 +77,68 @@ program
       cleanLevel = 'standard';
     }
 
-    console.log(chalk.cyan(`🧹 Mode: ${cleanLevel === 'fast' ? 'Fast' : 'Standard'}`));
+    const isDeepClean = options.deep || false;
+    console.log(
+      chalk.cyan(
+        `🧹 Mode: ${isDeepClean ? 'Deep' : cleanLevel === 'fast' ? 'Fast' : 'Standard'}`
+      )
+    );
 
     if (options.dryRun) {
       console.log(chalk.yellow('\n👁️  Preview mode - no files will be deleted\n'));
+    }
+
+    // Deep clean: collect dependencies from configured projects
+    let usedPackages = new Set<string>();
+    if (isDeepClean) {
+      console.log(chalk.cyan('\n📦 Analyzing dependencies from configured projects...'));
+
+      // Try to find config file
+      const configPath =
+        options.config || ConfigManager.findConfigFile(process.cwd());
+
+      if (configPath) {
+        console.log(chalk.cyan(`📄 Using config: ${configPath}`));
+        const configManager = new ConfigManager(configPath);
+        const projectPaths = await configManager.getProjectPathsForDeepClean();
+
+        if (projectPaths.length > 0) {
+          console.log(
+            chalk.cyan(`📁 Found ${projectPaths.length} configured projects`)
+          );
+
+          const depReader = new DependencyReader();
+          const { allPackages } = await depReader.getAllProjectsDependencies(
+            projectPaths
+          );
+          usedPackages = allPackages;
+
+          console.log(
+            chalk.gray(`   Collected ${allPackages.size} package versions`)
+          );
+        } else {
+          console.log(
+            chalk.yellow(
+              '⚠️  No enabled projects found in config. Will only clean current project dependencies.'
+            )
+          );
+          // Use current project's dependencies
+          const currentDeps = await new DependencyReader().getProjectDependencies(projectPath);
+          if (currentDeps) {
+            usedPackages = currentDeps.allPackages;
+          }
+        }
+      } else {
+        console.log(
+          chalk.yellow(
+            '⚠️  No config file found. Will only clean current project dependencies.'
+          )
+        );
+        const currentDeps = await new DependencyReader().getProjectDependencies(projectPath);
+        if (currentDeps) {
+          usedPackages = currentDeps.allPackages;
+        }
+      }
     }
 
     // Get clean targets
@@ -140,17 +203,33 @@ program
     // Calculate total size
     const totalSize = targets.reduce((acc, t) => acc + t.totalSize, 0);
 
-    if (totalSize === 0) {
+    if (totalSize === 0 && !isDeepClean) {
       console.log(chalk.green('\n✓ No cache files found to clean!'));
       process.exit(0);
     }
 
+    // Deep clean preview
+    let globalCleaner: GlobalCacheCleaner | null = null;
+    if (isDeepClean) {
+      globalCleaner = new GlobalCacheCleaner({}, usedPackages);
+      const preview = await globalCleaner.getPreview();
+      cli.displayGlobalCachePreview(preview);
+    }
+
     // Show preview
     if (options.dryRun) {
-      cli.displayPreview(targets, totalSize);
+      if (targets.length > 0) {
+        cli.displayPreview(targets, totalSize);
+      }
     } else {
       // Confirm cleanup
-      const confirmed = await cli.confirmClean(targets, totalSize);
+      let confirmed = false;
+
+      if (isDeepClean && globalCleaner) {
+        confirmed = await cli.confirmDeepClean(projectName);
+      } else {
+        confirmed = await cli.confirmClean(targets, totalSize);
+      }
 
       if (!confirmed) {
         console.log(chalk.gray('\n✖ Cleanup cancelled'));
@@ -169,6 +248,7 @@ program
       warningPaths: [],
     };
 
+    // Clean project caches
     for (const target of targets) {
       const spinner = cli.startSpinner(`Cleaning ${target.name}...`);
 
@@ -220,6 +300,36 @@ program
       }
     }
 
+    // Clean global caches if deep clean
+    if (isDeepClean && globalCleaner && !options.dryRun) {
+      const globalResult = await globalCleaner.cleanAll();
+
+      // Display global clean results
+      cli.displayDeepCleanResults({
+        gradle: {
+          deletedPaths: globalResult.gradle.deletedPaths.length,
+          freedSpace: globalResult.gradle.freedSpace,
+        },
+        cocoapods: {
+          deletedPaths: globalResult.cocoapods.deletedPaths.length,
+          freedSpace: globalResult.cocoapods.freedSpace,
+        },
+        pubCache: {
+          deletedPaths: globalResult.pubCache.deletedPaths.length,
+          freedSpace: globalResult.pubCache.freedSpace,
+        },
+        totalFreedSpace: globalResult.totalFreedSpace,
+      });
+
+      overallResult.freedSpace += globalResult.totalFreedSpace;
+      overallResult.deletedPaths.push(...globalResult.gradle.deletedPaths);
+      overallResult.deletedPaths.push(...globalResult.cocoapods.deletedPaths);
+      overallResult.deletedPaths.push(...globalResult.pubCache.deletedPaths);
+      overallResult.errors.push(...globalResult.gradle.errors);
+      overallResult.errors.push(...globalResult.cocoapods.errors);
+      overallResult.errors.push(...globalResult.pubCache.errors);
+    }
+
     // Display results
     cli.displayResults({
       ...overallResult,
@@ -235,6 +345,14 @@ program
         cleanedAndroid: hasAndroid,
         cleanedIOS: hasIOS,
       });
+
+      if (isDeepClean) {
+        console.log(chalk.cyan('\n═══════════════════════════════════════'));
+        console.log(chalk.cyan('  Global Cache Restore'));
+        console.log(chalk.cyan('═══════════════════════════════════════'));
+        console.log(chalk.gray('\nGlobal caches will be restored automatically'));
+        console.log(chalk.gray('when you next build any Flutter project.\n'));
+      }
     }
 
     // Exit with appropriate code
