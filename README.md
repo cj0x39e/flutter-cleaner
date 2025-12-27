@@ -16,7 +16,7 @@ A CLI tool to clean Flutter project cache and build artifacts.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/flutter-cleaner.git
+git clone https://github.com/cj0x39e/flutter-cleaner.git
 cd flutter-cleaner
 
 # Install dependencies
